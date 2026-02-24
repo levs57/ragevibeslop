@@ -10,18 +10,16 @@ use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
 use ark_std::UniformRand;
 use std::collections::{BTreeMap, HashSet};
-#[path = "helpers/pvugc_setup_check.rs"]
-mod pvugc_setup_check;
-use symbolic_core::symbolic_attack::{
+use crate::symbolic_attack::{
     build_constructible_elements, solve_target_from_constructible, ConstructibleKind,
     LaurentMonomial, LaurentPolynomial,
 };
-use symbolic_core::{
-    arm_columns, build_column_bases, compute_baked_target, compute_r_to_rho, PvugcVk,
+use crate::{
+    ColumnArms, PvugcVk, arm_columns, audit_circuit, build_column_bases, compute_baked_target, compute_r_to_rho, pvugc_setup_check
 };
 
 #[derive(Clone)]
-struct MockCircuit {
+pub struct MockCircuit {
     x_public: Vec<Fr>,
     y_private: Vec<Option<Fr>>,
     z_private: Option<Fr>,
@@ -88,7 +86,7 @@ struct SetupArtifacts {
     vk: Groth16VK<E>,
     pvugc_vk: PvugcVk<E>,
     x_public: Vec<Fr>,
-    col_arms: symbolic_core::ColumnArms<E>,
+    col_arms: ColumnArms<E>,
     oracle: SymbolicOracleData,
 }
 
@@ -866,8 +864,13 @@ fn attack_from_ciphertext(setup: &SetupArtifacts) -> PairingOutput<E> {
 
 #[test]
 fn attack() {
-    pvugc_setup_check::pvugc_setup_checks();
-
+    let circuit = MockCircuit {
+        x_public: vec![Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)],
+        y_private: vec![None, None, None],
+        z_private: None,
+    };
+    pvugc_setup_check::pvugc_setup_checks(circuit.clone());
+    audit_circuit::run_circuit_audit(circuit.clone());
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")

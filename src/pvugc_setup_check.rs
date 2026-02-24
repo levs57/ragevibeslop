@@ -1,16 +1,18 @@
 use ark_bls12_381::{Bls12_381 as E, Fr};
 use ark_ec::pairing::Pairing;
-use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
+use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{Field, One, Zero};
 use ark_groth16::Groth16;
 use ark_groth16::r1cs_to_qap::PvugcReduction;
 use ark_groth16::VerifyingKey as Groth16VK;
 use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
-use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
+use ark_relations::r1cs::ConstraintSynthesizer;
 use ark_serialize::CanonicalSerialize;
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
 use std::collections::HashSet;
+
+use crate::attack::MockCircuit;
 
 #[derive(Clone)]
 struct WitnessBasesResult<Ep: Pairing> {
@@ -27,35 +29,6 @@ struct LeanProvingKey<Ep: Pairing> {
     b_g1_query: Vec<Ep::G1Affine>,
     l_query: Vec<Ep::G1Affine>,
     h_query_wit: Vec<(u32, u32, Ep::G1Affine)>,
-}
-
-#[derive(Clone)]
-struct MockCircuit {
-    x_public: Vec<Fr>,
-    y_private: Vec<Fr>,
-    z_private: Fr,
-}
-
-impl ConstraintSynthesizer<Fr> for MockCircuit {
-    fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
-        use ark_relations::{lc, r1cs::Variable};
-        let x_vars: Vec<_> = self
-            .x_public
-            .iter()
-            .map(|x| cs.new_input_variable(|| Ok(*x)))
-            .collect::<Result<_, _>>()?;
-        let y_vars: Vec<_> = self
-            .y_private
-            .iter()
-            .map(|y| cs.new_witness_variable(|| Ok(*y)))
-            .collect::<Result<_, _>>()?;
-        let z = cs.new_witness_variable(|| Ok(self.z_private))?;
-        for (x, y) in x_vars.iter().zip(y_vars.iter()) {
-            cs.enforce_constraint(lc!() + Variable::One, lc!() + *y, lc!() + *x)?;
-        }
-        cs.enforce_constraint(lc!() + z, lc!() + z, lc!() + y_vars[0])?;
-        Ok(())
-    }
 }
 
 fn serial_ifft_g1(a: &mut [<E as Pairing>::G1], domain: &GeneralEvaluationDomain<Fr>) {
@@ -330,13 +303,8 @@ fn audit_gap_preimages_not_directly_published(lean_pk: &LeanProvingKey<E>, omitt
     assert!(offenders.is_empty(), "offenders: {:?}", offenders);
 }
 
-pub fn pvugc_setup_checks() {
+pub fn pvugc_setup_checks(circuit: MockCircuit) {
     let mut rng = StdRng::seed_from_u64(0xA11CE);
-    let circuit = MockCircuit {
-        x_public: vec![Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)],
-        y_private: vec![Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)],
-        z_private: Fr::from(9u64),
-    };
     let (pk, vk) = Groth16::<E, PvugcReduction>::circuit_specific_setup(circuit.clone(), &mut rng).unwrap();
     let wb = compute_witness_bases_from_pk(&pk, circuit);
 

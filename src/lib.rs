@@ -4,6 +4,10 @@ pub mod decap;
 pub mod error;
 pub mod ppe;
 pub mod symbolic_attack;
+#[cfg(test)]
+pub mod pvugc_setup_check;
+#[cfg(test)]
+pub mod attack;
 
 use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_ec::{AffineRepr, CurveGroup};

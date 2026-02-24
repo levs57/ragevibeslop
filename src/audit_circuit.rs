@@ -33,9 +33,7 @@ use ark_poly::{
     univariate::DensePolynomial, DenseUVPolynomial, EvaluationDomain, GeneralEvaluationDomain,
     Polynomial,
 };
-use ark_relations::r1cs::{
-    ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, LinearCombination, Variable,
-};
+use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef};
 use ark_std::rand::SeedableRng;
 use ark_std::UniformRand;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -159,237 +157,19 @@ impl TrapdoorPolyVector {
     }
 }
 
-// --- Audit Subjects ---
-
-trait AuditSubject {
-    fn name(&self) -> &'static str;
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()>;
+pub fn run_circuit_audit<T>(circuit: T)
+where
+    T: ConstraintSynthesizer<Fr>,
+{
+    run_audit(circuit);
 }
 
-struct MockCircuitSubject;
-impl AuditSubject for MockCircuitSubject {
-    fn name(&self) -> &'static str {
-        "MockCircuit (Public-binding + quartic link)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        let one = Variable::One;
-        let mut one_lc = LinearCombination::zero();
-        one_lc += (Fr::one(), one);
-
-        // Public inputs x1..xk
-        let x_vals = [Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)];
-        let x_vars: Vec<_> = x_vals
-            .iter()
-            .map(|x| cs.new_input_variable(|| Ok(*x)))
-            .collect::<Result<_, _>>()?;
-        // Private mirrors y1..yk with constraints 1 * y_i = x_i
-        let y_vars: Vec<_> = x_vals
-            .iter()
-            .map(|y| cs.new_witness_variable(|| Ok(*y)))
-            .collect::<Result<_, _>>()?;
-        for (x, y) in x_vars.iter().zip(y_vars.iter()) {
-            let mut lc_b = LinearCombination::zero();
-            lc_b += (Fr::one(), *y);
-            let mut lc_c = LinearCombination::zero();
-            lc_c += (Fr::one(), *x);
-            cs.enforce_constraint(one_lc.clone(), lc_b, lc_c)?;
-        }
-
-        // Extra private z with z^2 = y1
-        let z = cs.new_witness_variable(|| Ok(Fr::from(9u64)))?;
-        let mut lc_a = LinearCombination::zero();
-        lc_a += (Fr::one(), z);
-        let mut lc_b = LinearCombination::zero();
-        lc_b += (Fr::one(), z);
-        let mut lc_c = LinearCombination::zero();
-        lc_c += (Fr::one(), y_vars[0]);
-        cs.enforce_constraint(lc_a, lc_b, lc_c)?;
-        Ok(())
-    }
-}
-
-struct MockLinear;
-impl AuditSubject for MockLinear {
-    fn name(&self) -> &'static str {
-        "Mock Linear (Safe)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        // Public input is a hash h = w1 + w2 (fixed here to 5)
-        let hash_val = Fr::from(5u64);
-        let mut one_lc = LinearCombination::zero();
-        one_lc += (Fr::one(), Variable::One);
-
-        let h_pub = cs.new_input_variable(|| Ok(hash_val))?;
-
-        // Witness values for the underlying statement
-        let w1 = cs.new_witness_variable(|| Ok(Fr::from(2u64)))?;
-        let w2 = cs.new_witness_variable(|| Ok(Fr::from(3u64)))?;
-
-        // Witness copy of the hash
-        let h_wit = cs.new_witness_variable(|| Ok(hash_val))?;
-
-        // Witness-only relation: w1 + w2 = h_wit
-        let mut lc_b = LinearCombination::zero();
-        lc_b += (Fr::one(), w1);
-        lc_b += (Fr::one(), w2);
-        let mut lc_c = LinearCombination::zero();
-        lc_c += (Fr::one(), h_wit);
-        cs.enforce_constraint(one_lc.clone(), lc_b, lc_c)?;
-
-        // Public binding: 1 * h_pub = h_wit
-        let mut lc_b2 = LinearCombination::zero();
-        lc_b2 += (Fr::one(), h_pub);
-        let mut lc_c2 = LinearCombination::zero();
-        lc_c2 += (Fr::one(), h_wit);
-        cs.enforce_constraint(one_lc, lc_b2, lc_c2)?;
-        Ok(())
-    }
-}
-
-struct MockQuadratic;
-impl AuditSubject for MockQuadratic {
-    fn name(&self) -> &'static str {
-        "Mock Quadratic (Unsafe)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        use ark_r1cs_std::prelude::*;
-        let x = ark_r1cs_std::fields::fp::FpVar::new_input(cs.clone(), || Ok(Fr::one()))?;
-        let one = ark_r1cs_std::fields::fp::FpVar::constant(Fr::from(1));
-        x.mul_equals(&x, &one)?;
-        Ok(())
-    }
-}
-
-/// TEST CIRCUIT: V Span Separation SHOULD FAIL
-/// For v_pub ∈ span(v_wit), we need v_pub = c * v_wit (scalar multiple).
-/// 
-/// SIMPLE: Put x and w in B at EXACTLY the same single row.
-/// Then v_x = L_0 and v_w = L_0, so v_x = 1 * v_w.
-struct MockSpanViolation;
-impl AuditSubject for MockSpanViolation {
-    fn name(&self) -> &'static str {
-        "Mock V-Span Violation (SHOULD FAIL V-span)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        let x = cs.new_input_variable(|| Ok(Fr::from(1u64)))?;  // public
-        let w = cs.new_witness_variable(|| Ok(Fr::from(1u64)))?; // witness
-        let one = Variable::One;
-        
-        // SINGLE constraint that puts BOTH x and w in B at row 0:
-        // A=1, B=(x+w), C=2
-        // This gives: v_x = L_0 and v_w = L_0
-        // So v_x = 1 * v_w → v_pub IS IN span(v_wit)!
-        let lc_a = LinearCombination::from((Fr::one(), one));
-        let mut lc_b = LinearCombination::zero();
-        lc_b += (Fr::one(), x);  // x in B at row 0
-        lc_b += (Fr::one(), w);  // w in B at row 0 (SAME ROW!)
-        let lc_c = LinearCombination::from((Fr::from(2u64), one));
-        cs.enforce_constraint(lc_a, lc_b, lc_c)?;
-        
-        // Add a dummy constraint to satisfy minimum circuit requirements
-        // 1 * 1 = 1
-        let lc_a2 = LinearCombination::from((Fr::one(), one));
-        let lc_b2 = LinearCombination::from((Fr::one(), one));
-        let lc_c2 = LinearCombination::from((Fr::one(), one));
-        cs.enforce_constraint(lc_a2, lc_b2, lc_c2)?;
-        
-        Ok(())
-    }
-}
-
-/// TEST CIRCUIT: U Span Separation SHOULD FAIL
-/// Put x and w in A at same row (so u_x = u_w).
-/// Note: This also needs x in B for statement dependence.
-struct MockUSpanViolation;
-impl AuditSubject for MockUSpanViolation {
-    fn name(&self) -> &'static str {
-        "Mock U-Span Violation (SHOULD FAIL U-span)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        let x = cs.new_input_variable(|| Ok(Fr::from(1u64)))?;  // public
-        let w = cs.new_witness_variable(|| Ok(Fr::from(1u64)))?; // witness
-        let one = Variable::One;
-        
-        // Constraint 0: Put BOTH x and w in A at SAME row
-        // A=(x+w), B=1, C=(x+w)
-        // This gives: u_x = L_0 and u_w = L_0
-        // So u_x = 1 * u_w → u_pub IS IN span(u_wit)!
-        let mut lc_a0 = LinearCombination::zero();
-        lc_a0 += (Fr::one(), x);  // x in A at row 0
-        lc_a0 += (Fr::one(), w);  // w in A at row 0 (SAME ROW!)
-        let lc_b0 = LinearCombination::from((Fr::one(), one));
-        let mut lc_c0 = LinearCombination::zero();
-        lc_c0 += (Fr::one(), x);
-        lc_c0 += (Fr::one(), w);
-        cs.enforce_constraint(lc_a0, lc_b0, lc_c0)?;
-        
-        // Constraint 1: Put x in B for statement dependence (separate row)
-        // 1 * x = x
-        let lc_a1 = LinearCombination::from((Fr::one(), one));
-        let lc_b1 = LinearCombination::from((Fr::one(), x));
-        let lc_c1 = LinearCombination::from((Fr::one(), x));
-        cs.enforce_constraint(lc_a1, lc_b1, lc_c1)?;
-        
-        Ok(())
-    }
-}
-
-/// TEST CIRCUIT: W Span Separation SHOULD FAIL (but V should pass)
-/// Put x and w in C at same row (so w_x = w_w), but x in B at different row than w.
-struct MockWSpanViolation;
-impl AuditSubject for MockWSpanViolation {
-    fn name(&self) -> &'static str {
-        "Mock W-Span Violation (SHOULD FAIL W-span, V-span OK)"
-    }
-    fn synthesize(&self, cs: ConstraintSystemRef<Fr>) -> ark_relations::r1cs::Result<()> {
-        let x = cs.new_input_variable(|| Ok(Fr::from(1u64)))?;
-        let w = cs.new_witness_variable(|| Ok(Fr::from(1u64)))?;
-        let one = Variable::One;
-        
-        // Constraint 0: Put x in B (for statement dependence) but NOT where w is in B
-        // 1 * x = 1  → v_x = L_0
-        let lc_a0 = LinearCombination::from((Fr::one(), one));
-        let lc_b0 = LinearCombination::from((Fr::one(), x));
-        let lc_c0 = LinearCombination::from((Fr::one(), one));
-        cs.enforce_constraint(lc_a0, lc_b0, lc_c0)?;
-        
-        // Constraint 1: Put BOTH x and w in C at SAME row
-        // 1 * 1 = x + w  → w_x = L_1 and w_w = L_1
-        // So w_x = 1 * w_w → w_pub IS IN span(w_wit)!
-        let lc_a1 = LinearCombination::from((Fr::one(), one));
-        let lc_b1 = LinearCombination::from((Fr::one(), one));
-        let mut lc_c1 = LinearCombination::zero();
-        lc_c1 += (Fr::one(), x);  // x in C at row 1
-        lc_c1 += (Fr::one(), w);  // w in C at row 1 (SAME ROW!)
-        cs.enforce_constraint(lc_a1, lc_b1, lc_c1)?;
-        
-        Ok(())
-    }
-}
-
-pub fn main() {
-    println!("PVUGC Production Audit Tool");
-    println!("===========================\n");
-
-    let subjects: Vec<Box<dyn AuditSubject>> = vec![
-        Box::new(MockCircuitSubject),
-    ];
-
-    for subject in subjects {
-        println!(">>> AUDITING: {} <<<", subject.name());
-        run_audit(subject.as_ref());
-        println!("\n");
-    }
-}
-
-pub fn run_mock_circuit_audit() {
-    let subject = MockCircuitSubject;
-    run_audit(&subject);
-}
-
-fn run_audit(subject: &dyn AuditSubject) {
+fn run_audit<T>(circuit: T)
+where
+    T: ConstraintSynthesizer<Fr>,
+{
     let cs = ConstraintSystem::<Fr>::new_ref();
-    subject.synthesize(cs.clone()).unwrap();
+    circuit.generate_constraints(cs.clone()).unwrap();
     cs.finalize();
     println!("Constraints: {}", cs.num_constraints());
     let num_pub = cs.num_instance_variables();
