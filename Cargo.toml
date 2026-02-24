@@ -1,0 +1,22 @@
+[workspace]
+
+[package]
+name = "symbolic_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ark-ec = "0.5"
+ark-ff = "0.5"
+ark-bls12-381 = "0.5"
+ark-groth16 = { git = "https://github.com/sidhujag/PVUGC", package = "ark-groth16" }
+ark-poly = "0.5"
+ark-r1cs-std = "0.5"
+ark-relations = "0.5"
+ark-serialize = "0.5"
+ark-snark = "0.5"
+ark-std = "0.5"
+sha2 = "0.10"
+thiserror = "1.0"
+
+[dev-dependencies]
