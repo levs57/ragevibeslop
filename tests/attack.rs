@@ -82,18 +82,16 @@ struct SymbolicOracleData {
     c_mono: Vec<Vec<Fr>>,
 }
 
+#[derive(Clone)]
 struct SetupArtifacts {
     lean_pk: LeanProvingKey<E>,
     vk: Groth16VK<E>,
     pvugc_vk: PvugcVk<E>,
     x_public: Vec<Fr>,
+    col_arms: symbolic_core::ColumnArms<E>,
     oracle: SymbolicOracleData,
 }
 
-#[derive(Clone)]
-struct Ciphertext<Ep: Pairing> {
-    col_arms: symbolic_core::ColumnArms<Ep>,
-}
 
 fn mono(s: &str) -> LaurentPolynomial<Fr> {
     LaurentPolynomial::monomial(Fr::one(), LaurentMonomial::from_symbol(s))
@@ -702,7 +700,7 @@ fn compute_witness_bases_from_pk(
     )
 }
 
-fn build_setup(x_public: Vec<Fr>) -> SetupArtifacts {
+fn build_setup(x_public: Vec<Fr>, rho: Fr) -> SetupArtifacts {
     let mut rng = StdRng::seed_from_u64(0xA11CE);
     let circuit = MockCircuit {
         x_public: x_public.clone(),
@@ -754,23 +752,18 @@ fn build_setup(x_public: Vec<Fr>) -> SetupArtifacts {
         h_query_wit,
         l_query: pk.l_query.clone(),
     };
+    let bases = build_column_bases(&pvugc_vk, &vk, &x_public).unwrap();
     SetupArtifacts {
         lean_pk,
         vk,
         pvugc_vk,
         x_public,
         oracle,
+        col_arms: arm_columns(&bases, &rho).unwrap()
     }
 }
 
-fn build_ciphertext_for_statement(setup: &SetupArtifacts, rho: &Fr) -> Ciphertext<E> {
-    let bases = build_column_bases(&setup.pvugc_vk, &setup.vk, &setup.x_public)
-        .expect("build_column_bases");
-    let col_arms = arm_columns(&bases, rho).expect("arm_columns");
-    Ciphertext { col_arms }
-}
-
-fn attack_from_ciphertext(ciphertext: &Ciphertext<E>, setup: &SetupArtifacts) -> PairingOutput<E> {
+fn attack_from_ciphertext(setup: &SetupArtifacts) -> PairingOutput<E> {
     let vk = &setup.lean_pk.vk;
     let num_pub = vk.gamma_abc_g1.len();
     let domain_size = setup.oracle.a_mono[0].len();
@@ -823,7 +816,7 @@ fn attack_from_ciphertext(ciphertext: &Ciphertext<E>, setup: &SetupArtifacts) ->
 
     let mut g2_real = Vec::<<E as Pairing>::G2Affine>::new();
     let mut g2_sym = Vec::<LaurentPolynomial<Fr>>::new();
-    for (i, y) in ciphertext.col_arms.y_cols_rho.iter().copied().enumerate() {
+    for (i, y) in setup.col_arms.y_cols_rho.iter().copied().enumerate() {
         g2_real.push(y);
         if i == 0 {
             let mut y_public_leg = mono("BETA") + to_lagrange_poly(&setup.oracle.b_mono[0]);
@@ -838,7 +831,7 @@ fn attack_from_ciphertext(ciphertext: &Ciphertext<E>, setup: &SetupArtifacts) ->
             g2_sym.push(to_lagrange_poly(&setup.oracle.b_mono[b_col]) * mono("RHO"));
         }
     }
-    g2_real.push(ciphertext.col_arms.delta_rho);
+    g2_real.push(setup.col_arms.delta_rho);
     g2_sym.push(mono("DELTA") * mono("RHO"));
 
     let gt_real = setup.pvugc_vk.t_const_points_gt.as_ref().to_vec();
@@ -886,13 +879,11 @@ fn attack() {
         "attack statement must be unsatisfiable"
     );
 
-    let setup = build_setup(vec![Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)]);
-    let ciphertext = build_ciphertext_for_statement(&setup, &rho);
+    let setup = build_setup(vec![Fr::from(5u64), Fr::from(11u64), Fr::from(13u64)], rho);
+    let recovered_k = attack_from_ciphertext(&setup);
 
     let r_baked = compute_baked_target(&setup.vk, &setup.pvugc_vk, &setup.x_public)
         .expect("compute_baked_target");
     let k_target_backdoor = compute_r_to_rho(&r_baked, &rho);
-
-    let recovered_k = attack_from_ciphertext(&ciphertext, &setup);
     assert_eq!(recovered_k, k_target_backdoor);
 }
